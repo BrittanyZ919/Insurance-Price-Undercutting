@@ -1,0 +1,276 @@
+## Undercutting Based on Analytics for ALLSTATE
+
+### Project background
+
+In most industries, costs of inputs can be used to calculate a profitable price to charge for a product. In the insurance industry, their product is the "insurance policy", and the largest input is the cost of "claims" their customers file when they get into an accident. These costs are difficult to calculate for two reasons. First, they vary by customer; some customers have multiple claims over the life of their policy, others have none. Second, the total cost of the claims is not known until after an accident occurs, which is well after the policy has been priced and sold to the customer.
+
+However, segments of customers may be more likely to cause accidents leading insurance companies to charge different prices to various groups to "out-segment" their competitors leading to adverse selection for the competitors who end up with a large number of high-risk and claim-prone customers.
+
+Insurance companies tightly guard the algorithms that they use to price the policies of individual customers, but if we could provide a policy quote after observing our competitors quote, this would allow for an "instantaneous last mover" advantage. Several sites provide services of comparing quote and considerable variability is observed between competitors. At that point it is already too late to update your quote. Therefore, if we can predict competitors' dynamic quotes we can base our quote on those as well.
+
+This project is a pilot study for an auto insurance company, Allstate. Afterwards, we will be able to comment on the feasibility of the project, and potential next steps.
+
+```{Load files}
+# Load additional file to install packages
+source("DataAnalyticsFunctions.R")
+
+# Load ALLSTATE DATA FILE
+ALLcost <- read.csv("ALLSTATEcost.csv")
+```
+
+### Data description
+
+The data file containing the information of 15,484 quotes of an online competitor (ALLSTATE). The file contains information about the policy offered, information on the customer, and the quoted price (see Exhibit 1 below for a description). The manager has discussed with us how prices are typically quoted in the insurance industry. In particular he stressed that many features appear as add-on prices.
+
+### Data Preparation
+
+```{Summary of data}
+summary(ALLcost)
+
+# there are plenty of things to decide here.
+## Which variables have NA's
+## risk_factor also has NA (that should be also a level)
+## duration_previous it has 0 and NA's we probably need to treat them differently.
+## C_previous
+## location
+
+# Print the first 6 data points
+ALLcost[1:6,]
+
+## we see that the first customer requested 2 quotes
+## if we are predicting the behavior of the customer, we should take that in consideration
+## but first we will predict the cost quoted by ALLSTATE
+## so we start by assuming it does not discriminate across used id and shopping_pt (an assumption)
+drop <- c("customer_ID","shopping_pt","record_type","time","location")
+
+## This creates a dataframe (DATA) from d without the columns in drops
+DATA <- ALLcost[,!(names(ALLcost) %in% drop)]
+
+DATA$car_value <-  factor(DATA$car_value)
+DATA$day <-  factor(DATA$day)
+DATA$state <-  factor(DATA$state)
+duration_NA <-  ifelse( is.na(DATA$duration_previous) , 1, 0 )  ### creating a dummy variable for NA
+
+# number of NA in duration
+sum(duration_NA)
+# corresponds to 5% of the sample 783/15483
+sum(duration_NA)/length(duration_NA)
+## It is not that big and we could just drop them in a first analysis
+## however we wil create a dummy variable
+DATA$duration_previous[duration_NA>0] <-0 ### making NA to zero
+
+# Look at C_previous
+C_NA <-  ifelse( is.na(DATA$C_previous), 1, 0 )        ### creating a dummy variable for NA
+sum(C_NA)
+cor(C_NA,duration_NA)
+## the same observations that do not report previous duration...
+# Treat C_previous as factor
+DATA$C_previous[C_NA>0] <-0 ### making NA to zero
+DATA$C_previous <-  factor(DATA$C_previous)                           
+
+# Look at risk_factor
+risk_NA <- ifelse( is.na(DATA$risk_factor), 1, 0 )
+sum(risk_NA)
+# The NA for those are different observations
+DATA$risk_factor[risk_NA>0] <-0                     
+# treat thatas a level "0" (a new category of risk)
+DATA$risk_factor <-  factor(DATA$risk_factor)                           
+
+DATA$homeowner <-  factor(DATA$homeowner)
+DATA$married_couple <-  factor(DATA$married_couple)
+summary(DATA)
+
+# there should be no NA's in the data at this point
+
+```
+
+### Step1: Visualize relation between variables of interest
+
+```{Data visualization}
+#1)
+plot(DATA$car_value, DATA$cost, xlab = 'CAR VALUE', ylab='COST OF QUOTED COVERAGE', main = 'CAR VALUE & COST OF QUOTED COVERAGE')
+#2)
+varstolook <- c( "cost", "married_couple", "homeowner", "car_age", "duration_previous")
+#3)
+installpkg("corrplot")
+library(corrplot)
+CorMatrix <- cor(DATA[,varstolook])
+corrplot(CorMatrix, method = "square")
+```
+
+### Step2: Pick two variables of the model, explore their marginal impact on the quote
+
+```{Data visualization}
+DATA$A <-  factor(DATA$A)
+DATA$B <-  factor(DATA$B)
+DATA$C <-  factor(DATA$C)
+DATA$D <-  factor(DATA$D)
+DATA$E <-  factor(DATA$E)
+DATA$F <-  factor(DATA$F)
+DATA$G <-  factor(DATA$G)
+
+# model1
+result <- glm(cost ~ ., data = DATA) 
+summary(result)
+1 - (result$dev/result$null)
+
+# model2
+# to include interactions based on the the coverage options A through G
+result_interactions <- glm(cost ~ .+(A+B+C+D+E+F+G)^2, data = DATA) 
+summary(result_interactions)
+1 - (result_interactions$dev/result_interactions$null)
+#### this has all the variables plus all the interations 
+
+installpkg("effects")
+library(effects)
+plot(effect(term="A:B",mod=result_interactions,default.levels=20),multiline=TRUE)
+plot(effect(term="A:F",mod=result_interactions,default.levels=20),multiline=TRUE)
+plot(effect(term="A:G",mod=result_interactions,default.levels=20),multiline=TRUE)
+
+# model3
+# to use log(cost) as Y instead of cost.
+### This actually seems to be a good modeling choice if ALLSTATE's makes adjustment based on multiplicative factors
+
+result_log <- glm(log(cost) ~ .+(A+B+C+D+E+F+G)^2, data = DATA) 
+summary(result_log)
+1 - (result_log$dev/result_log$null)
+```
+
+Focus on the second model. In particular on the interaction. If interactions were not significant, it suggests that ALLSTATES looks at these variables individually instead of jointly.
+
+```{Focus on model2}
+intbegin <-82
+intend <- 175
+interactions <- names(result_interactions$coef[intbegin:intend])
+pvals <- summary(result_interactions)$coef[intbegin:intend,4]
+number.tests <- length(pvals)
+
+### STATISTICALLY SIGNIFICANCY
+
+#### standard rule (misses multiplicity)
+signif.stat <- (pvals<= .05)
+sum(signif.stat)
+interactions[signif.stat]
+
+#### conservative rule
+signif.stat <- (pvals<= .05/number.tests)
+sum(signif.stat)
+interactions[signif.stat]
+
+### BUSINESS SIGNIFICANT
+interact_coef <- summary(result_interactions)$coef[intbegin:intend,1]
+### Need to have abs() (negative values are "discount") 
+signif.buss   <- (abs(interact_coef)>=10)
+sum(signif.buss)
+interactions[signif.buss]
+```
+
+This suggests that ALLSTATE does not look only at individual features but also at combinations. Potentially they have a matrix or a tensor (e.g. three index matrices) to account for how the choices interact.
+
+```{interact_coef}
+which( signif.buss==TRUE & signif.stat == TRUE)
+interact_coef[which( signif.buss==TRUE & signif.stat == TRUE)]
+```
+
+### Step3: suppose that a customer will pick the lowest among the quotes provided. We have Built a model framework to maximize expected revenue from a customer given the observed characteristics.
+
+### Follow Step3: aiming to maximize expected revenue, provide quotes for each of the three customers specified in "new.customers" with observed characteristics.
+
+```{determine quotes}
+# Suppose there is not covariates information
+## Heer, quantile regression model is simply the quantiles of DATA$cost
+taus0 <- seq(from=0.0,to=1,by=0.00125)
+QF0<-quantile(DATA$cost,prob=taus0)
+
+par(mar=c(1.5,1.5,.5,1.5))
+par(mai=c(1.5,1.5,.5,1.5))
+plot(taus0,QF0,ylab="Dollars", type="l", lwd=2, main="Quantile function of Cost",xlab = expression(tau))
+```
+
+It is tempting to simply quote the lowest quote to ensure we get the business which in turn increases the revenue.
+
+In principle, this could be the best thing you can do, but it might not be. It really depends on the way ALLSTATE prices. If it gives the same price to everybody, indeed it is the only thing we can do. However, if it price discriminates a lot, we might have to drop the price substantially.
+
+```{determine quotes}
+### Look at the expected revenue function if we quote the tau-quantile:
+plot(taus0,QF0*(1-taus0),ylab="Dollars", type="l", lwd=2, main="Expected Revenues",xlab = expression(tau))
+
+plot(taus0,QF0*(1-taus0),ylab="Dollars", ylim=c(350,550), xlim=c(0,.2),type="l", lwd=2, main="Expected Revenues",xlab = expression(tau))
+plot(QF0,QF0*(1-taus0),ylab="Dollars", ylim=c(350,550), xlim=c(350,610),type="l", lwd=2, main="Expected Revenues",xlab = "Quote (dollars)")
+## Relative difference
+Msg <- paste("The percentage difference between quoting")
+Msg<- paste(Msg,"the minimum quote to essentially ensure 100% chance of undercutting")
+Msg<- paste(Msg,"and maximizing the expected value is",(max(QF0*(1-taus0))-QF0[1])/QF0[1])
+print(Msg)
+
+max(QF0*(1-taus0))
+QF0[which.max(QF0*(1-taus0))]
+
+### Now lets use the covariates by relating on quantile regression to estimate the conditional quantiles
+installpkg("quantreg")
+library(quantreg)
+
+taus <- seq(from=0.005,to=.15,by=0.0025)
+rq_taus <-rq( cost ~ ., data = DATA, tau = taus)
+
+new.customers <- readRDS("NewCustomers.Rda")
+new.customers$A <- factor(new.customers$A)
+new.customers$B <- factor(new.customers$B)
+new.customers$C <- factor(new.customers$C)
+new.customers$D <- factor(new.customers$D)
+new.customers$E <- factor(new.customers$E)
+new.customers$F <- factor(new.customers$F)
+new.customers$G <- factor(new.customers$G)
+
+## compute the conditional quantiles X'beta_tau 
+QF.predicted <-predict(rq_taus, newdata=new.customers)
+```
+
+```{plot the quantile function for the "new.customers"}
+# Customer 1
+
+plot( taus, QF.predicted[1,],lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 1)")
+plot( taus, sort(QF.predicted[1,]),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 1)")
+plot( taus, sort(QF.predicted[1,])*(1-taus),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Expected Revenue (Customer 1)")
+plot( sort(QF.predicted[1,]), sort(QF.predicted[1,])*(1-taus),lwd=2, type ="l", col = "blue",xlab="Quote (dollars)",ylab="", main="Expected Revenues (Customer 1)")
+### We need to maximize QF * (1-tau)
+indices <- which.max( sort(QF.predicted[1,])*(1-taus) )
+names(indices)=""
+Quotes <- sort(QF.predicted[1,])[indices]
+Quotes
+taus[indices[1]]
+lines(c(Quotes,Quotes), c(0, sort(QF.predicted[1,])[indices[1]]*(1-taus[indices[1]])), lty=2  )
+
+# Customer 2
+
+plot( taus, QF.predicted[2,],lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 2)")
+plot( taus, sort(QF.predicted[2,]),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 2)")
+plot( taus, sort(QF.predicted[2,])*(1-taus),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Expected Revenue (Customer 2)" )
+plot( sort(QF.predicted[2,]), sort(QF.predicted[2,])*(1-taus),lwd=2, type ="l", col = "blue",xlab="Quote (dollars)",ylab="", main="Expected Revenues (Customer 2)")
+
+### We need to maximize QF * (1-tau)
+indices <- which.max( sort(QF.predicted[2,])*(1-taus) )
+names(indices)=""
+Quotes <- sort(QF.predicted[2,])[indices]
+names(Quotes)=""
+Quotes
+taus[indices[1]]
+lines(c(Quotes,Quotes), c(0, sort(QF.predicted[2,])[indices[1]]*(1-taus[indices[1]])), lty=2 )
+
+# Customer 3
+
+plot( taus, QF.predicted[3,],lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 3)")
+plot( taus, sort(QF.predicted[3,]),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Quantile function (Customer 3)")
+plot( taus, sort(QF.predicted[3,])*(1-taus),lwd=2, type ="l", col = "blue",xlab=expression(tau),ylab="", main="Expected Revenue (Customer 3)")
+plot( sort(QF.predicted[3,]), sort(QF.predicted[3,])*(1-taus),lwd=2, type ="l", col = "blue",xlab="Quote (dollars)",ylab="", main="Expected Revenues (Customer 3)")
+
+###
+indices <- which.max( sort(QF.predicted[3,])*(1-taus) )
+names(indices)=""
+Quotes <- sort(QF.predicted[3,])[indices]
+Quotes
+taus[indices[1]]
+lines(c(Quotes,Quotes), c(0, sort(QF.predicted[3,])[indices[1]]*(1-taus[indices[1]])), lty=2  )
+
+QF.predictedrq <- QF.predicted
+```
